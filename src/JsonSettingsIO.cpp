@@ -149,6 +149,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["rtcStoresUtc"] = s.rtcStoresUtc != 0;
   doc["rtcVariantHint"] = s.rtcVariantHint;
   doc["rtcReferenceEpoch"] = s.rtcReferenceEpoch;
+  doc["lastNonZeroBacklightLevel"] = s.lastNonZeroBacklightLevel;
 
   String json;
   serializeJson(doc, json);
@@ -252,6 +253,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.rtcVariantHint = clamp(doc["rtcVariantHint"] | static_cast<uint8_t>(0), static_cast<uint8_t>(3),
                            static_cast<uint8_t>(0));
   s.rtcReferenceEpoch = doc["rtcReferenceEpoch"] | static_cast<uint32_t>(0);
+  s.lastNonZeroBacklightLevel = doc["lastNonZeroBacklightLevel"] | (s.backlightLevel > 0 ? s.backlightLevel : (uint8_t)2);
 
   LOG_DBG("CPS", "Settings loaded from file");
 

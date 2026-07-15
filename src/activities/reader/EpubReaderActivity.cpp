@@ -98,7 +98,12 @@ bool isTopCenterBacklightTap(int16_t x, int16_t y, const GfxRenderer& renderer) 
 }
 
 void toggleReaderBacklight() {
-  SETTINGS.backlightLevel = SETTINGS.backlightLevel == 0 ? kReaderBacklightToggleLevel : 0;
+  if (SETTINGS.backlightLevel == 0) {
+    SETTINGS.backlightLevel = SETTINGS.lastNonZeroBacklightLevel;
+  } else {
+    SETTINGS.lastNonZeroBacklightLevel = SETTINGS.backlightLevel;
+    SETTINGS.backlightLevel = 0;
+  }
   BoardT5S3::setBacklightLevel(SETTINGS.backlightLevel);
   SETTINGS.saveToFile();
 }
