@@ -13,6 +13,12 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+FLASH_MODES = {
+    0x00: "qio",
+    0x01: "qout",
+    0x02: "dio",
+    0x03: "dout",
+}
 
 
 def run(command: list[str]) -> None:
@@ -36,6 +42,21 @@ def app_offset() -> str:
     match = re.search(r"^\s*board_upload\.offset_address\s*=\s*(0x[0-9a-fA-F]+|\d+)\s*$", platformio_ini.read_text(),
                       re.MULTILINE)
     return match.group(1) if match else "0x10000"
+
+
+def verify_flash_mode(path: Path, expected: str = "dio") -> None:
+    with path.open("rb") as image:
+        header = image.read(4)
+
+    if len(header) < 4 or header[0] != 0xE9:
+        raise ValueError(f"{path} does not look like an ESP image")
+
+    flash_mode = FLASH_MODES.get(header[2], f"unknown ({header[2]:#04x})")
+    if flash_mode != expected:
+        raise ValueError(
+            f"{path} has flash mode {flash_mode}; expected {expected}. "
+            "Set board_build.flash_mode = dio and rebuild."
+        )
 
 
 def main() -> int:
@@ -72,6 +93,13 @@ def main() -> int:
             print(f"  {path}", file=sys.stderr)
         return 1
 
+    try:
+        verify_flash_mode(bootloader)
+        verify_flash_mode(firmware)
+    except ValueError as error:
+        print(f"Flash mode check failed: {error}", file=sys.stderr)
+        return 1
+
     esptool = platformio_core_dir() / "packages" / "tool-esptoolpy" / "esptool.py"
     if not esptool.exists():
         print(f"Could not find esptool.py at {esptool}. Run the PlatformIO build first.", file=sys.stderr)
@@ -87,9 +115,9 @@ def main() -> int:
         "-o",
         str(output),
         "--flash_mode",
-        "qio",
+        "keep",
         "--flash_size",
-        "16MB",
+        "keep",
         "0x0",
         str(bootloader),
         "0x8000",
@@ -98,7 +126,12 @@ def main() -> int:
         str(firmware),
     ])
 
-    print(f"\nMerged firmware ready: {output.relative_to(REPO_ROOT)}")
+    try:
+        display_output = output.relative_to(REPO_ROOT)
+    except ValueError:
+        display_output = output
+
+    print(f"\nMerged firmware ready: {display_output}")
     print("Flash this merged image at offset 0x0.")
     return 0
 
