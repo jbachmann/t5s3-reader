@@ -5,6 +5,8 @@
 #include <HalClock.h>
 #include <Logging.h>
 
+#include <algorithm>
+
 #include "BatteryStatusActivity.h"
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
@@ -26,6 +28,23 @@
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+
+namespace {
+constexpr int kBacklightMin = 0;
+constexpr int kBacklightMax = 10;
+constexpr int kBacklightButtonTarget = 34;
+constexpr int kBacklightTrackHeight = 10;
+constexpr int kBacklightTrackGap = 8;
+
+bool isBacklightSetting(const SettingInfo& setting) {
+  return setting.valuePtr == &CrossPointSettings::backlightLevel;
+}
+
+int pageStartForSelection(int selectedSettingIndex, int pageItems) {
+  const int selectedRowIndex = std::max(0, selectedSettingIndex - 1);
+  return (selectedRowIndex / std::max(1, pageItems)) * std::max(1, pageItems);
+}
+}  // namespace
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
@@ -175,6 +194,118 @@ void SettingsActivity::loop() {
   }
 }
 
+void SettingsActivity::applyBacklightLevel(uint8_t level) {
+  SETTINGS.backlightLevel = std::clamp<uint8_t>(level, kBacklightMin, kBacklightMax);
+  BoardT5S3::setBacklightLevel(SETTINGS.backlightLevel);
+  SETTINGS.saveToFile();
+}
+
+bool SettingsActivity::handleBacklightTouch(int16_t x, int16_t, int touchedSetting) {
+  if (currentSettings == nullptr || touchedSetting < 0 || touchedSetting >= settingsCount) {
+    return false;
+  }
+
+  const auto& setting = (*currentSettings)[touchedSetting];
+  if (!isBacklightSetting(setting)) {
+    return false;
+  }
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int rowHeight = metrics.listRowHeight;
+  const int controlRight = pageWidth - metrics.contentSidePadding;
+  const int buttonSize = std::clamp(rowHeight - 8, 22, kBacklightButtonTarget);
+  const int controlWidth = std::min(pageWidth - metrics.contentSidePadding * 2, 260);
+  const int controlX = std::max(metrics.contentSidePadding, controlRight - controlWidth);
+  const int sliderX = controlX + buttonSize + kBacklightTrackGap;
+  const int sliderWidth = std::max(1, controlWidth - buttonSize * 2 - kBacklightTrackGap * 2);
+
+  selectedSettingIndex = touchedSetting + 1;
+
+  if (x < controlX || x >= controlX + controlWidth) {
+    requestUpdate();
+    return true;
+  }
+
+  if (x < controlX + buttonSize) {
+    applyBacklightLevel(kBacklightMin);
+  } else if (x >= controlX + controlWidth - buttonSize) {
+    applyBacklightLevel(kBacklightMax);
+  } else {
+    const int rawLevel = ((x - sliderX) * kBacklightMax + sliderWidth / 2) / sliderWidth;
+    applyBacklightLevel(static_cast<uint8_t>(std::clamp(rawLevel, kBacklightMin, kBacklightMax)));
+  }
+
+  requestUpdate();
+  return true;
+}
+
+void SettingsActivity::drawBacklightSlider() const {
+  if (currentSettings == nullptr) {
+    return;
+  }
+
+  int backlightIndex = -1;
+  for (int i = 0; i < settingsCount; ++i) {
+    if (isBacklightSetting((*currentSettings)[i])) {
+      backlightIndex = i;
+      break;
+    }
+  }
+  if (backlightIndex < 0) {
+    return;
+  }
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int contentHeight =
+      pageHeight -
+      (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
+       metrics.verticalSpacing * 2);
+  const int rowHeight = metrics.listRowHeight;
+  if (rowHeight <= 0 || contentHeight <= 0) {
+    return;
+  }
+
+  const int pageItems = std::max(1, contentHeight / rowHeight);
+  const int pageStartIndex = pageStartForSelection(selectedSettingIndex, pageItems);
+  if (backlightIndex < pageStartIndex || backlightIndex >= pageStartIndex + pageItems) {
+    return;
+  }
+
+  const int rowY = contentTop + (backlightIndex - pageStartIndex) * rowHeight;
+  const int buttonSize = std::clamp(rowHeight - 8, 22, kBacklightButtonTarget);
+  const int controlWidth = std::min(pageWidth - metrics.contentSidePadding * 2, 260);
+  const int controlX = std::max(metrics.contentSidePadding, pageWidth - metrics.contentSidePadding - controlWidth);
+  const int buttonY = rowY + (rowHeight - buttonSize) / 2;
+  const int rightButtonX = controlX + controlWidth - buttonSize;
+  const int sliderX = controlX + buttonSize + kBacklightTrackGap;
+  const int sliderWidth = std::max(1, controlWidth - buttonSize * 2 - kBacklightTrackGap * 2);
+  const int trackY = rowY + (rowHeight - kBacklightTrackHeight) / 2;
+  const int level = std::clamp<int>(SETTINGS.backlightLevel, kBacklightMin, kBacklightMax);
+  const int fillWidth = (sliderWidth - 4) * level / kBacklightMax;
+  const int knobX = sliderX + 2 + fillWidth - 2;
+  const bool selected = selectedSettingIndex == backlightIndex + 1;
+
+  renderer.fillRect(controlX - 2, rowY, controlWidth + 4, rowHeight, selected);
+
+  renderer.drawRect(controlX, buttonY, buttonSize, buttonSize, !selected);
+  const int minTextWidth = renderer.getTextWidth(SMALL_FONT_ID, "0");
+  renderer.drawText(SMALL_FONT_ID, controlX + (buttonSize - minTextWidth) / 2, buttonY + 6, "0", !selected);
+
+  renderer.drawRect(rightButtonX, buttonY, buttonSize, buttonSize, !selected);
+  const int maxTextWidth = renderer.getTextWidth(SMALL_FONT_ID, "10");
+  renderer.drawText(SMALL_FONT_ID, rightButtonX + (buttonSize - maxTextWidth) / 2, buttonY + 6, "10", !selected);
+
+  renderer.drawRect(sliderX, trackY, sliderWidth, kBacklightTrackHeight, !selected);
+  if (fillWidth > 0) {
+    renderer.fillRect(sliderX + 2, trackY + 2, fillWidth, kBacklightTrackHeight - 4, !selected);
+  }
+  renderer.fillRect(knobX, trackY - 4, 4, kBacklightTrackHeight + 8, !selected);
+}
+
 void SettingsActivity::toggleCurrentSetting() {
   int selectedSetting = selectedSettingIndex - 1;
   if (selectedSetting < 0 || selectedSetting >= settingsCount) {
@@ -204,6 +335,10 @@ void SettingsActivity::toggleCurrentSetting() {
                                                                  : static_cast<uint8_t>(setting.enumStringValues.size());
     setting.valueSetter((setting.valueGetter() + 1) % optionCount);
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
+    if (isBacklightSetting(setting)) {
+      return;
+    }
+
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
       SETTINGS.*(setting.valuePtr) = setting.valueRange.min;
@@ -323,6 +458,10 @@ bool SettingsActivity::onTouchTap(int16_t x, int16_t y) {
     return false;
   }
 
+  if (handleBacklightTouch(x, y, touchedSetting)) {
+    return true;
+  }
+
   selectedSettingIndex = touchedSetting + 1;
   toggleCurrentSetting();
   requestUpdate();
@@ -373,16 +512,20 @@ void SettingsActivity::render(RenderLock&&) {
             valueText = I18N.get(setting.enumValues[value]);
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-          valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+          valueText = isBacklightSetting(setting) ? "" : std::to_string(SETTINGS.*(setting.valuePtr));
         }
         return valueText;
       },
       true);
 
+  drawBacklightSlider();
+
   // Draw help text
+  const bool backlightSelected = selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
+                                 isBacklightSetting(settings[selectedSettingIndex - 1]);
   const auto confirmLabel = (selectedSettingIndex == 0)
                                 ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-                                : tr(STR_TOGGLE);
+                                : (backlightSelected ? tr(STR_SELECT) : tr(STR_TOGGLE));
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

@@ -161,6 +161,9 @@ class SettingsActivity final : public Activity {
   static const StrId categoryNames[categoryCount];
 
   void enterCategory(int categoryIndex);
+  void applyBacklightLevel(uint8_t level);
+  bool handleBacklightTouch(int16_t x, int16_t y, int touchedSetting);
+  void drawBacklightSlider() const;
   void toggleCurrentSetting();
   void rebuildSettingsLists();
 

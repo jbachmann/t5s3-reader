@@ -1,15 +1,15 @@
 # CrossPoint Reader Development Guide
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
-Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
+Project: Open-source e-reader firmware for Lilygo T5 E-Paper S3 Pro Lite (ESP32-S3)
+Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering.
 
 ## AI Agent Identity and Cognitive Rules
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
-* Primary Constraint: 380KB RAM is the hard ceiling. Stability is non-negotiable.
+* Primary Constraint: Balance performance with battery life. Leverage PSRAM effectively.
 * Evidence-Based Reasoning: Before proposing a change, you MUST cite the specific file path and line numbers that justify the modification.
-* Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-C3 RISC-V target, check the open-x4-sdk or official docs first.
-* No Unfounded Claims: Do not claim performance gains or memory savings without explaining the technical mechanism (e.g., DRAM vs IRAM usage).
-* Resource Justification: You must justify any new heap allocation (new, malloc, std::vector) or explain why a stack/static alternative was rejected.
+* Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-S3, check the official docs first.
+* No Unfounded Claims: Do not claim performance gains or memory savings without explaining the technical mechanism (e.g., PSRAM vs DRAM access speeds).
+* Resource Justification: Justify buffer allocation choices (DRAM for speed, PSRAM for size).
 * Verification: After suggesting a fix, instruct the user on how to verify it (e.g., monitoring heap via Serial or checking a specific cache file).
 ---
 
@@ -40,24 +40,23 @@ find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
 ## Platform and Hardware Constraints
 
 ### Hardware Specs
-* MCU: ESP32-C3 (Single-core RISC-V @ 160MHz)
-* RAM: ~380KB usable (VERY LIMITED - primary project constraint)
-  * **NO PSRAM**: ESP32-C3 has no PSRAM capability (unlike ESP32-S3)
-  * **Single Buffer Mode**: Only ONE 48KB framebuffer (not double-buffered)
+* MCU: ESP32-S3 (Dual-core Xtensa LX7 @ 240MHz)
+* RAM: ~512KB SRAM (for performance-critical operations)
+* PSRAM: 8MB (for large buffers, fonts, and framebuffers)
 * Flash: 16MB (Instruction storage and static data)
 * Display: 800x480 E-Ink (Slow refresh, monochrome, 1-2s full update)
-  * Framebuffer: 48,000 bytes (800 × 480 ÷ 8)
-* Storage: SD Card (Used for books and aggressive caching)
+  * Framebuffer: 48,000 bytes (800 × 480 ÷ 8). Double buffering is now possible.
+* Storage: SD Card (Used for books and caching)
 
 ### The Resource Protocol
-1. Stack Safety: Limit local function variables to < 256 bytes. The ESP32-C3 default stack is small; use std::unique_ptr or static pools for larger buffers.
-2. Heap Fragmentation: Avoid repeated new/delete in loops. Allocate buffers once during onEnter() and reuse them.
-3. Flash Persistence: Large constant data (UI strings, lookup tables) MUST be marked static const to stay in Flash (Instruction Bus), freeing DRAM.
-4. String Policy: Prohibit std::string and Arduino String in hot paths. Use std::string_view for read-only access and snprintf with fixed char[] buffers for construction.
-5. UI Strings: All user-facing text must use the `tr()` macro (e.g., `tr(STR_LOADING)`) for i18n support. Never hardcode UI strings directly. For the avoidance of doubt, logging messages (LOG_DBG/LOG_ERR) can be hardcoded, but user-facing text must use `tr()`.
-6. `constexpr` First: Compile-time constants and lookup tables must be `constexpr`, not just `static const`. This moves computation to compile time, enables dead-branch elimination, and guarantees flash placement. Use `static constexpr` for class-level constants.
-7. `std::vector` Pre-allocation: Always call `.reserve(N)` before any `push_back()` loop. Each growth event allocates a new block (2×), copies all elements, then frees the old one — three heap operations that fragment DRAM. When the final size is unknown, estimate conservatively.
-8. SPIFFS Write Throttling: Never write a settings file on every user interaction. Guard all writes with a value-change check (`if (newVal == _current) return;`). Progress saves during reading must be debounced — write on activity exit or every N page turns, not on every turn. SPIFFS sectors have a finite erase cycle limit.
+1. **PSRAM First**: Large buffers (>64KB), such as framebuffers, full-font data, and large parsed documents, should be allocated in PSRAM.
+2. **DRAM for Speed**: Internal SRAM should be reserved for performance-critical objects, task stacks, and DMA-capable buffers.
+3. Heap Fragmentation: Avoid repeated new/delete in loops. Allocate buffers once during onEnter() and reuse them.
+4. Flash Persistence: Large constant data (UI strings, lookup tables) MUST be marked `static const` to stay in Flash (Instruction Bus), freeing DRAM.
+5. String Policy: `std::string` and Arduino `String` are acceptable for non-performant code paths. Use `std::string_view` for read-only access and `snprintf` with fixed `char[]` buffers for performance-critical construction.
+6. UI Strings: All user-facing text must use the `tr()` macro (e.g., `tr(STR_LOADING)`) for i18n support.
+7. `constexpr` First: Compile-time constants and lookup tables should be `constexpr` where possible to move computation to compile time.
+8. SPIFFS Write Throttling: Never write a settings file on every user interaction. Guard all writes with a value-change check (`if (newVal == _current) return;`).
 
 ---
 
@@ -97,20 +96,19 @@ find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
 These flags in `platformio.ini` fundamentally affect firmware behavior:
 
 ```cpp
--DEINK_DISPLAY_SINGLE_BUFFER_MODE=1  // Single framebuffer (saves 48KB RAM!)
+// -DEINK_DISPLAY_SINGLE_BUFFER_MODE=1 // This is no longer required with PSRAM
 -DARDUINO_USB_MODE=1                 // Enable USB CDC
 -DARDUINO_USB_CDC_ON_BOOT=1          // Serial available immediately at boot
--DXML_CONTEXT_BYTES=1024             // XML parser memory limit (EPUB parsing)
+-DXML_CONTEXT_BYTES=4096             // XML parser memory can be increased
 -DUSE_UTF8_LONG_NAMES=1              // SD card long filename support
 -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES=1   // Avoid zlib name conflicts
 -DXML_GE=0                           // Disable XML general entities (security)
 ```
 
-**SINGLE_BUFFER_MODE implications**:
-- Only ONE framebuffer exists (not double-buffered)
-- Grayscale rendering requires temporary buffer allocation (`renderer.storeBwBuffer()`)
-- Must call `renderer.restoreBwBuffer()` to free temporary buffers
-- See [lib/GfxRenderer/GfxRenderer.cpp:439-440](../lib/GfxRenderer/GfxRenderer.cpp) for malloc usage
+**PSRAM Implications**:
+- Double-buffering for the display is now feasible to reduce tearing.
+- Large data structures can be moved out of limited SRAM.
+- Use `ps_malloc` for PSRAM allocations.
 
 ### Directory Structure
 * lib/: Internal libraries (Epub engine, GfxRenderer, UITheme, I18n)
@@ -166,10 +164,10 @@ if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
 * Use #pragma once for all header files.
 
 ### Memory Safety and RAII
-* Smart Pointers: Prefer std::unique_ptr. Avoid std::shared_ptr (unnecessary atomic overhead for a single-core RISC-V).
-* RAII: Use destructors for cleanup, but call file.close() or vTaskDelete() explicitly for deterministic resource release.
+* Smart Pointers: Prefer `std::unique_ptr`. `std::shared_ptr` is acceptable where shared ownership is required.
+* RAII: Use destructors for cleanup, but call `file.close()` or `vTaskDelete()` explicitly for deterministic resource release.
 
-### ESP32-C3 Platform Pitfalls
+### ESP32-S3 Platform Pitfalls
 
 #### `std::string_view` and Null Termination
 `string_view` is *not* null-terminated. Passing `.data()` to any C-style API (`drawText`, `snprintf`, `strcmp`, SdFat file paths) is undefined behaviour when the view is a substring or a view of a non-null-terminated buffer.
@@ -213,28 +211,14 @@ static DRAM_ATTR uint32_t isrEventFlags = 0;
 | Task → task | `xSemaphoreTake()` / mutex |
 | Simple flag (single writer ISR) | `volatile bool` + `portENTER_CRITICAL_ISR()` |
 
-#### RISC-V Alignment
-ESP32-C3 faults on unaligned multi-byte loads. Never cast a `uint8_t*` buffer to a wider pointer type and dereference it directly. Use `memcpy` for any unaligned read:
-
-```cpp
-// WRONG — faults if buf is not 4-byte aligned:
-uint32_t val = *reinterpret_cast<const uint32_t*>(buf);
-
-// CORRECT:
-uint32_t val;
-memcpy(&val, buf, sizeof(val));
-```
-
-This applies to all cache deserialization code and any raw buffer-to-struct casting. `__attribute__((packed))` structs have the same hazard when accessed via member reference.
-
 #### Template and `std::function` Bloat
-Each template instantiation generates a separate binary copy. `std::function<void()>` adds ~2–4 KB per unique signature and heap-allocates its closure. Avoid both in library code and any path called from the render loop:
+Each template instantiation generates a separate binary copy. `std::function<void()>` adds ~2–4 KB per unique signature and may heap-allocate its closure. Avoid both in library code and any path called from the render loop where performance is critical.
 
 ```cpp
-// Avoid — heap-allocating, large binary footprint:
+// Avoid in hot paths — heap-allocating, larger binary footprint:
 std::function<void()> callback;
 
-// Prefer — zero overhead:
+// Prefer for performance — zero overhead:
 void (*callback)() = nullptr;
 
 // For member function + context (common activity callback pattern):
@@ -261,17 +245,14 @@ When a template is necessary, limit instantiations: use explicit template instan
 
 **Source**: [src/activities/home/HomeActivity.cpp:166](../src/activities/home/HomeActivity.cpp), [lib/GfxRenderer/GfxRenderer.cpp:439-440](../lib/GfxRenderer/GfxRenderer.cpp)
 
-Despite "prefer stack allocation," malloc is acceptable for:
-1. **Large temporary buffers** (> 256 bytes, won't fit on stack)
-2. **One-time allocations** during activity initialization
-3. **Bitmap rendering buffers** (variable size, used briefly)
+`malloc` is acceptable for buffers that do not fit on the stack. Prefer `ps_malloc` to allocate from PSRAM for large buffers.
 
 **Pattern**:
 ```cpp
-// Allocate
-auto* buffer = static_cast<uint8_t*>(malloc(bufferSize));
+// Allocate from PSRAM
+auto* buffer = static_cast<uint8_t*>(ps_malloc(bufferSize));
 if (!buffer) {
-  LOG_ERR("MODULE", "malloc failed: %d bytes", bufferSize);
+  LOG_ERR("MODULE", "ps_malloc failed: %d bytes", bufferSize);
   return false;  // Handle allocation failure
 }
 
@@ -284,10 +265,9 @@ buffer = nullptr;
 ```
 
 **Rules**:
-- **ALWAYS check for nullptr** after malloc
+- **ALWAYS check for nullptr** after `malloc` or `ps_malloc`
 - **Free immediately** after use (don't hold across multiple operations)
 - **Set to nullptr** after free (avoid use-after-free)
-- **Document size**: Comment why stack allocation was rejected
 
 **Examples in codebase**:
 - Cover image buffers: [HomeActivity.cpp:166](../src/activities/home/HomeActivity.cpp)
@@ -307,30 +287,19 @@ buffer = nullptr;
 
 **Source**: [src/MappedInputManager.cpp:20-55](../src/MappedInputManager.cpp)
 
-Constraint: Physical button positions are fixed on hardware, but their logical functions change based on user settings and screen orientation.
+**Constraint**: The Lilygo T5 S3 Pro Lite has only 3 physical custom buttons. The complex remapping from the previous hardware is no longer applicable and must be redesigned.
 
-**Button Categories**:
-1. **Physical Fixed** (Up/Down side buttons):
-   - `Button::Up` → Always `HalGPIO::BTN_UP`
-   - `Button::Down` → Always `HalGPIO::BTN_DOWN`
+**Proposed Button Categories**:
+1. **Physical Buttons**:
+   - `Button::A`
+   - `Button::B`
+   - `Button::C`
 
-2. **User Remappable** (Front buttons):
-   - `Button::Back` → Maps to `SETTINGS.frontButtonBack` (hardware index)
-   - `Button::Confirm` → Maps to `SETTINGS.frontButtonConfirm`
-   - `Button::Left` → Maps to `SETTINGS.frontButtonLeft`
-   - `Button::Right` → Maps to `SETTINGS.frontButtonRight`
+2. **Logical Mapping**:
+   - The function of each button will be context-dependent (e.g., `PageForward`, `PageBack`, `Menu`, `Confirm`).
+   - A new, simplified mapping system needs to be implemented in `MappedInputManager`.
 
-3. **Reader-Specific** (Page navigation with optional swap):
-   - `Button::PageBack` → Uses side button (swappable via `SETTINGS.sideButtonLayout`)
-   - `Button::PageForward` → Uses side button (swappable)
-
-**Implementation**:
-- Activities use **logical buttons** (e.g., `Button::Confirm`)
-- `MappedInputManager` translates to **physical hardware buttons**
-- User can remap front buttons in settings
-- Orientation changes handled separately by renderer coordinate transforms
-
-**Rule**: Always use `MappedInputManager::Button::*` enums, never raw `HalGPIO::BTN_*` indices (except in ButtonRemapActivity).
+**Rule**: The existing `MappedInputManager` logic is invalid for the new hardware target. It must be refactored to handle a 3-button input scheme.
 
 ### UITheme (The GUI Macro)
 * Rule: All UI rendering must go through the GUI macro (UITheme). 
