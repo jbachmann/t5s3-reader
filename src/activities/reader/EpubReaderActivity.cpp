@@ -43,8 +43,7 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr char UTF8_ELLIPSIS[] = "\xE2\x80\xA6";
-constexpr int kBacklightTapHeight = 64;
-constexpr int kBacklightTapMaxWidth = 180;
+constexpr int kBacklightTapHeight = 128;
 constexpr uint8_t kReaderBacklightToggleLevel = 2;
 
 int clampPercent(int percent) {
@@ -86,15 +85,8 @@ bool bookmarkMatchesProgress(const BookmarkEntry& bookmark, int spineIndex, int 
          bookmarkProgress - bookmarkProgressEpsilon <= pageRange.end;
 }
 
-bool isTopCenterBacklightTap(int16_t x, int16_t y, const GfxRenderer& renderer) {
-  if (y < 0 || y >= kBacklightTapHeight) {
-    return false;
-  }
-
-  const int width = renderer.getScreenWidth();
-  const int tapWidth = std::min(width / 3, kBacklightTapMaxWidth);
-  const int tapLeft = (width - tapWidth) / 2;
-  return x >= tapLeft && x < tapLeft + tapWidth;
+bool isTopCenterBacklightTap(int16_t /*x*/, int16_t y, const GfxRenderer& /*renderer*/) {
+  return y >= 0 && y < kBacklightTapHeight;
 }
 
 void toggleReaderBacklight() {
