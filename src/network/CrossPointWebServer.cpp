@@ -1335,9 +1335,6 @@ void CrossPointWebServer::handlePostSettings() {
             SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
             if (s.valuePtr == &CrossPointSettings::backlightLevel) {
               backlightChanged = true;
-              if (SETTINGS.backlightLevel > 0) {
-                SETTINGS.lastNonZeroBacklightLevel = SETTINGS.backlightLevel;
-              }
             }
           }
           applied++;

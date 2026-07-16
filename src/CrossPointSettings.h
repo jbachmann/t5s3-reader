@@ -189,7 +189,6 @@ class CrossPointSettings {
   uint8_t sleepScreen = DARK;
   // Front-light/backlight brightness level (0 = off, 10 = max)
   uint8_t backlightLevel = 2;
-  uint8_t lastNonZeroBacklightLevel = 2;
   // Sleep screen cover mode settings
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter

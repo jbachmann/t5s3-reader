@@ -196,9 +196,6 @@ void SettingsActivity::loop() {
 
 void SettingsActivity::applyBacklightLevel(uint8_t level) {
   SETTINGS.backlightLevel = std::clamp<uint8_t>(level, kBacklightMin, kBacklightMax);
-  if (SETTINGS.backlightLevel > 0) {
-    SETTINGS.lastNonZeroBacklightLevel = SETTINGS.backlightLevel;
-  }
   BoardT5S3::setBacklightLevel(SETTINGS.backlightLevel);
   SETTINGS.saveToFile();
 }
