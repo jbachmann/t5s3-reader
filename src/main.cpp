@@ -21,6 +21,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
+#include "PowerControl.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
@@ -137,6 +138,7 @@ constexpr unsigned long kBootConfirmHoldMs = 700;
 constexpr unsigned long kPcaButtonPowerOffHoldMs = 2000;
 
 void renderPowerOffScreen(const char* status) {
+  (void)status;  // Status line intentionally not shown on the power-off screen.
   RenderLock lock;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -145,7 +147,6 @@ void renderPowerOffScreen(const char* status) {
   renderer.clearScreen();
   renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2 - 30, 120, 120);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 40, "CrossPoint", true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 72, status, true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 102, "Hold PWR to power on");
   renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }
@@ -218,7 +219,7 @@ void enterDeepSleep() {
   }
 
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
-  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.lastSleepFromReader = APP_STATE.lastSleepFromReader || activityManager.isReaderActivityInStack();
   APP_STATE.saveToFile();
 
   activityManager.goToSleep();
@@ -233,7 +234,7 @@ void enterDeepSleep() {
 
 void enterDeepSleepKeepingScreen(bool wakeOnTouch = true) {
   HalPowerManager::Lock powerLock;
-  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.lastSleepFromReader = APP_STATE.lastSleepFromReader || activityManager.isReaderActivityInStack();
   APP_STATE.saveToFile();
 
   BoardT5S3::setBacklightLevel(0);
@@ -247,7 +248,7 @@ void enterDeepSleepKeepingScreen(bool wakeOnTouch = true) {
 void enterPowerOffKeepingScreen(const char* status) {
   {
     HalPowerManager::Lock powerLock;
-    APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+    APP_STATE.lastSleepFromReader = activityManager.isReaderActivityInStack();
     APP_STATE.saveToFile();
     display.deepSleep();
 
@@ -265,6 +266,12 @@ void enterPowerOffKeepingScreen(const char* status) {
 
   enterDeepSleepKeepingScreen(false);
 }
+
+// Set by activities (e.g. the reader menu's Shut Down button) to request a full
+// power-off. Consumed at the top of loop() so the battery-cut runs in the main-loop
+// context rather than inside an activity's call stack.
+bool g_shutdownRequested = false;
+void requestShutdown() { g_shutdownRequested = true; }
 
 void setupDisplayAndFonts() {
   display.begin();
@@ -316,7 +323,7 @@ HalDisplay::RefreshMode readerResumeRefreshMode() {
 }
 
 bool shouldResumeReaderOnBoot() {
-  return !APP_STATE.openEpubPath.empty() && APP_STATE.lastSleepFromReader &&
+  return SETTINGS.resumeReaderOnBoot && !APP_STATE.openEpubPath.empty() && APP_STATE.lastSleepFromReader &&
          !mappedInputManager.isPressed(MappedInputManager::Button::Back) && APP_STATE.readerActivityLoadCount == 0;
 }
 
@@ -418,6 +425,7 @@ void setup() {
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
   setupDisplayAndFonts();
+  display.setFlipOutput(SETTINGS.flipUi != 0);
 
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
@@ -462,6 +470,13 @@ void loop() {
 
   gpio.update();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
+
+  // Handle a shutdown requested by an activity (e.g. the reader menu Shut Down button).
+  if (g_shutdownRequested) {
+    g_shutdownRequested = false;
+    enterPowerOffKeepingScreen("");
+    return;
+  }
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 
@@ -523,6 +538,20 @@ void loop() {
     }
   };
   const bool isReaderPage = activityManager.isReaderPageActivity();
+  // Reader page-turn direction of the two physical buttons follows the Side Button Layout
+  // setting. BOOT plays the "up" side-button role and IO48/PCA plays the "down" role, so
+  // NEXT_PREV swaps which one turns forward vs back. A 180° UI flip swaps the two physical
+  // buttons as well (top is now bottom), composing with the side-layout swap via XOR.
+  const bool flipUi = SETTINGS.flipUi != 0;
+  const bool swapSideButtons = SETTINGS.sideButtonLayout == CrossPointSettings::NEXT_PREV;
+  const bool effectiveSwap = swapSideButtons != flipUi;
+  const auto bootPageButton = effectiveSwap ? MappedInputManager::Button::PageForward
+                                            : MappedInputManager::Button::PageBack;
+  const auto pcaPageButton = effectiveSwap ? MappedInputManager::Button::PageBack
+                                           : MappedInputManager::Button::PageForward;
+  // Non-reader navigation: BOOT is Up and IO48 is Down, swapped when the UI is flipped.
+  const auto bootNavButton = flipUi ? MappedInputManager::Button::Down : MappedInputManager::Button::Up;
+  const auto pcaNavButton = flipUi ? MappedInputManager::Button::Up : MappedInputManager::Button::Down;
 
   static bool bootLongConfirmHandled = false;
   if (gpio.isPressed(HalGPIO::BTN_POWER)) {
@@ -533,8 +562,9 @@ void loop() {
     }
   } else {
     if (gpio.wasReleased(HalGPIO::BTN_POWER) && !bootLongConfirmHandled) {
-      LOG_DBG("MAIN", "BOOT short press mapped to %s", isReaderPage ? "PageBack" : "Up");
-      queueHardwareButtonTap(isReaderPage ? MappedInputManager::Button::PageBack : MappedInputManager::Button::Up);
+      LOG_DBG("MAIN", "BOOT short press mapped to %s",
+              isReaderPage ? (effectiveSwap ? "PageForward" : "PageBack") : (flipUi ? "Down" : "Up"));
+      queueHardwareButtonTap(isReaderPage ? bootPageButton : bootNavButton);
     }
     bootLongConfirmHandled = false;
   }
@@ -542,8 +572,9 @@ void loop() {
   static bool pcaPowerOffHandled = false;
   if (!gpio.isPressed(HalGPIO::BTN_PCA)) {
     if (gpio.wasReleased(HalGPIO::BTN_PCA) && !pcaPowerOffHandled) {
-      LOG_DBG("MAIN", "PCA9535 button short press mapped to %s", isReaderPage ? "PageForward" : "Down");
-      queueHardwareButtonTap(isReaderPage ? MappedInputManager::Button::PageForward : MappedInputManager::Button::Down);
+      LOG_DBG("MAIN", "PCA9535 button short press mapped to %s",
+              isReaderPage ? (effectiveSwap ? "PageBack" : "PageForward") : (flipUi ? "Up" : "Down"));
+      queueHardwareButtonTap(isReaderPage ? pcaPageButton : pcaNavButton);
     }
     pcaPowerOffHandled = false;
   } else if (!pcaPowerOffHandled && gpio.getHeldTime() >= kPcaButtonPowerOffHoldMs) {

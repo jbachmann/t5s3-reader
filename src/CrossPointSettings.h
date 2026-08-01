@@ -202,6 +202,8 @@ class CrossPointSettings {
   uint8_t statusBarTitle = CHAPTER_TITLE;
   uint8_t statusBarBattery = 1;
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
+  // When 1, hide all clocks everywhere (reader status bar + home/system header)
+  uint8_t hideClock = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;
@@ -260,6 +262,14 @@ class CrossPointSettings {
   uint8_t showHiddenFiles = 0;
   // Remove a book from the recent list once reading reaches the end.
   uint8_t autoRemoveFinishedRecentBooks = 0;
+  // Prompt for confirmation before powering off from the reader menu (1 = prompt, 0 = off immediately)
+  uint8_t confirmShutdown = 0;
+  // Open the global drag-down menu with a double-click of the home button.
+  uint8_t doubleClickHomeMenu = 0;
+  // Flip the entire UI 180° (upside down) and swap the two side buttons' up/down + page-turn roles.
+  uint8_t flipUi = 0;
+  // Resume the last open book on boot (1). When 0, always boot to the home screen.
+  uint8_t resumeReaderOnBoot = 1;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning. Hidden when the active board has no tilt sensor.

@@ -59,6 +59,8 @@ void TxtReaderActivity::onEnter() {
   auto filePath = txt->getPath();
   auto fileName = filePath.substr(filePath.rfind('/') + 1);
   APP_STATE.openEpubPath = filePath;
+  // Book loaded successfully: clear the crash-loop guard so the next boot can resume this book.
+  APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(filePath, fileName, "", "");
 
@@ -500,7 +502,8 @@ void TxtReaderActivity::buildStatusBarTitle(std::string& title, TextRole& titleR
   }
 
   title = txt->getTitle();
-  titleRole = title.empty() ? TextRole::System : TextRole::UserContent;
+  // Keep the built-in small font (System role) so the title matches the page/battery text; using
+  // UserContent would swap in the SD reader font, whose smallest 12pt size towers over the 8pt bar.
 }
 
 void TxtReaderActivity::renderStatusBar() const {

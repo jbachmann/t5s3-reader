@@ -173,6 +173,8 @@ void EpubReaderActivity::onEnter() {
 
   // Save current epub as last opened epub and add to recent books
   APP_STATE.openEpubPath = epub->getPath();
+  // Book loaded successfully: clear the crash-loop guard so the next boot can resume this book.
+  APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
 
@@ -991,6 +993,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
     const auto tBwStore = millis();
 
+    // Preserve the 1-bit BW page; the grayscale passes below clear the framebuffer, and
+    // overlays such as the global menu rely on it still holding the readable page.
+    renderer.storeBwBuffer();
+
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop,
@@ -1008,6 +1014,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     renderer.displayGrayBuffer(ReaderUtils::takeReaderRefreshMode(pagesUntilFullRefresh));
     const auto tGrayDisplay = millis();
     renderer.setRenderMode(GfxRenderer::BW);
+    renderer.restoreBwBuffer();  // leave the shared framebuffer holding the readable BW page
     fcm->logStats("gray");
 
     const auto tEnd = millis();
@@ -1108,14 +1115,16 @@ void EpubReaderActivity::buildStatusBarTitle(std::string& title, TextRole& title
     if (tocIndex != -1) {
       const auto tocItem = epub->getTocItem(tocIndex);
       title = tocItem.title;
-      titleRole = tocItem.title.empty() ? TextRole::System : TextRole::UserContent;
     }
+    // Keep the built-in small font (System role) so the title matches the page/battery text in the
+    // status bar. Don't promote to UserContent here: that swaps in the SD reader font, whose
+    // smallest size (12pt) towers over the 8pt status text.
     return;
   }
 
   if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
     title = epub->getTitle();
-    titleRole = title.empty() ? TextRole::System : TextRole::UserContent;
+    // System role (built-in small font) to match the rest of the status bar; see note above.
   }
 }
 
